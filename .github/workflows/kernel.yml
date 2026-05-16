@@ -72,17 +72,27 @@ jobs:
             libarchive-tools pahole pkg-config \
             dwarves kmod binutils-aarch64-linux-gnu
 
-      - name: Setup ZyC Clang 20
+      - name: Setup Clang (LLVM 20 via apt)
         run: |
-          mkdir -p ~/toolchains/zyc-clang
-          cd ~/toolchains/zyc-clang
-          ZYC_URL=$(curl -s "https://raw.githubusercontent.com/ZyCromerZ/Clang/main/Clang-20-link.txt" | head -1)
-          echo "Downloading ZyC Clang: $ZYC_URL"
-          wget -q "$ZYC_URL" -O zyc-clang.tar.gz
-          tar -xzf zyc-clang.tar.gz
-          rm zyc-clang.tar.gz
-          echo "CLANG_PATH=$HOME/toolchains/zyc-clang/bin" >> $GITHUB_ENV
-          echo "PATH=$HOME/toolchains/zyc-clang/bin:$PATH" >> $GITHUB_ENV
+          # Install LLVM 20 directly — fastest and most reliable
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s 20
+          sudo apt-get install -y \
+            clang-20 lld-20 llvm-20 \
+            clang-tools-20 || true
+
+          # Create symlinks
+          sudo ln -sf /usr/bin/clang-20 /usr/local/bin/clang
+          sudo ln -sf /usr/bin/clang++-20 /usr/local/bin/clang++
+          sudo ln -sf /usr/bin/ld.lld-20 /usr/local/bin/ld.lld
+          sudo ln -sf /usr/bin/llvm-ar-20 /usr/local/bin/llvm-ar
+          sudo ln -sf /usr/bin/llvm-nm-20 /usr/local/bin/llvm-nm
+          sudo ln -sf /usr/bin/llvm-objcopy-20 /usr/local/bin/llvm-objcopy
+          sudo ln -sf /usr/bin/llvm-objdump-20 /usr/local/bin/llvm-objdump
+          sudo ln -sf /usr/bin/llvm-strip-20 /usr/local/bin/llvm-strip
+          sudo ln -sf /usr/bin/llvm-readelf-20 /usr/local/bin/llvm-readelf
+
+          echo "PATH=/usr/lib/llvm-20/bin:$PATH" >> $GITHUB_ENV
+          clang --version
 
       - name: Setup GCC
         run: |
@@ -148,7 +158,7 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          export PATH="$HOME/toolchains/zyc-clang/bin:$PATH"
+          export PATH="/usr/lib/llvm-20/bin:$PATH"
           export KBUILD_BUILD_USER="APT"
           export KBUILD_BUILD_HOST="APTKernel"
           MAKE_ARGS=(
