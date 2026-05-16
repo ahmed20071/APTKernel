@@ -1,0 +1,206 @@
+name: APTKernel — alioth Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_SOURCE:
+        description: 'Kernel Source Repo'
+        required: true
+        default: 'https://github.com/MiCode/Xiaomi_Kernel_OpenSource'
+      KERNEL_BRANCH:
+        description: 'Kernel Branch'
+        required: true
+        default: 'alioth-s-oss'
+      ROOT_MANAGER:
+        description: 'Root Manager'
+        required: true
+        type: choice
+        options:
+          - KernelSU
+          - ReSukiSU
+          - SukiSU-Ultra
+          - Magisk-Delta
+          - None
+        default: 'KernelSU'
+      SUSFS:
+        description: 'Enable SuSFS'
+        required: true
+        type: boolean
+        default: true
+      HYPER_DTBO:
+        description: 'Include HyperOS DTBO'
+        required: true
+        type: boolean
+        default: true
+      RELEASE:
+        description: 'Create GitHub Release'
+        required: true
+        type: boolean
+        default: true
+
+env:
+  KERNEL_SOURCE: ${{ github.event.inputs.KERNEL_SOURCE }}
+  KERNEL_BRANCH: ${{ github.event.inputs.KERNEL_BRANCH }}
+  ROOT_MANAGER: ${{ github.event.inputs.ROOT_MANAGER }}
+  SUSFS: ${{ github.event.inputs.SUSFS }}
+  KERNEL_NAME: APTKernel
+  DEVICE: alioth
+  DEFCONFIG: apt_alioth_defconfig
+  CLANG_VERSION: "20"
+  ARCH: arm64
+  SUBARCH: arm64
+
+jobs:
+  build:
+    name: Build APTKernel for alioth
+    runs-on: ubuntu-22.04
+    steps:
+
+      - name: Checkout APTKernel Config
+        uses: actions/checkout@v4
+        with:
+          path: apt-config
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            git curl wget zip unzip bc bison flex \
+            libssl-dev libelf-dev python3 python3-pip \
+            make gcc gcc-aarch64-linux-gnu \
+            cpio ccache lz4 zstd pigz \
+            libarchive-tools pahole pkg-config \
+            dwarves kmod binutils-aarch64-linux-gnu
+
+      - name: Setup ZyC Clang 20
+        run: |
+          mkdir -p ~/toolchains/zyc-clang
+          cd ~/toolchains/zyc-clang
+          ZYC_URL=$(curl -s "https://raw.githubusercontent.com/ZyCromerZ/Clang/main/Clang-20-link.txt" | head -1)
+          echo "Downloading ZyC Clang: $ZYC_URL"
+          wget -q "$ZYC_URL" -O zyc-clang.tar.gz
+          tar -xzf zyc-clang.tar.gz
+          rm zyc-clang.tar.gz
+          echo "CLANG_PATH=$HOME/toolchains/zyc-clang/bin" >> $GITHUB_ENV
+          echo "PATH=$HOME/toolchains/zyc-clang/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Setup GCC
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+
+      - name: Clone Kernel Source
+        run: |
+          git clone --depth=1 \
+            -b ${{ env.KERNEL_BRANCH }} \
+            ${{ env.KERNEL_SOURCE }} \
+            kernel
+          cd kernel
+          echo "KERNEL_VERSION=$(make kernelversion)" >> $GITHUB_ENV
+
+      - name: Integrate KernelSU
+        if: ${{ github.event.inputs.ROOT_MANAGER == 'KernelSU' }}
+        run: |
+          cd kernel
+          KSU_TAG=$(curl -s "https://api.github.com/repos/tiann/KernelSU/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s $KSU_TAG
+
+      - name: Integrate ReSukiSU
+        if: ${{ github.event.inputs.ROOT_MANAGER == 'ReSukiSU' }}
+        run: |
+          cd kernel
+          curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash -
+
+      - name: Integrate SukiSU-Ultra
+        if: ${{ github.event.inputs.ROOT_MANAGER == 'SukiSU-Ultra' }}
+        run: |
+          cd kernel
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -
+
+      - name: Integrate SuSFS
+        if: ${{ github.event.inputs.SUSFS == 'true' }}
+        run: |
+          cd kernel
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
+          PATCH_DIR="/tmp/susfs4ksu/kernel_patches"
+          for patch in $PATCH_DIR/4.19/*.patch $PATCH_DIR/*.patch; do
+            [ -f "$patch" ] && git apply "$patch" 2>/dev/null || true
+          done
+          cp /tmp/susfs4ksu/fs/susfs.c fs/ 2>/dev/null || true
+          cp /tmp/susfs4ksu/include/linux/susfs.h include/linux/ 2>/dev/null || true
+
+      - name: Apply APT Performance Patches
+        run: |
+          cd kernel
+          for patch in ../apt-config/patches/*.patch; do
+            [ -f "$patch" ] || continue
+            echo "Applying: $(basename $patch)"
+            git apply "$patch" 2>/dev/null || \
+            patch -p1 < "$patch" 2>/dev/null || \
+            echo "  [SKIP] $(basename $patch)"
+          done
+
+      - name: Setup defconfig
+        run: |
+          mkdir -p kernel/arch/arm64/configs
+          cp apt-config/apt_alioth_defconfig kernel/arch/arm64/configs/
+
+      - name: Build Kernel
+        run: |
+          cd kernel
+          export PATH="$HOME/toolchains/zyc-clang/bin:$PATH"
+          export KBUILD_BUILD_USER="APT"
+          export KBUILD_BUILD_HOST="APTKernel"
+          MAKE_ARGS=(
+            O=out
+            ARCH=arm64
+            CC=clang
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            LLVM=1
+            LLVM_IAS=1
+            -j$(nproc --all)
+          )
+          make "${MAKE_ARGS[@]}" apt_alioth_defconfig
+          make "${MAKE_ARGS[@]}" 2>&1 | tee /tmp/build.log
+          if [ -f "out/arch/arm64/boot/Image" ]; then
+            echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
+          else
+            echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
+            tail -80 /tmp/build.log && exit 1
+          fi
+
+      - name: Package AnyKernel3
+        run: |
+          cp -r apt-config/AnyKernel3 anykernel
+          cp kernel/out/arch/arm64/boot/Image anykernel/
+          cp kernel/out/arch/arm64/boot/dts/qcom/*alioth*.dtbo anykernel/ 2>/dev/null || true
+          cd anykernel
+          BUILD_DATE=$(date +%Y%m%d)
+          zip -r9 "../APTKernel-${BUILD_DATE}-alioth.zip" . -x "*.git*"
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: APTKernel-alioth
+          path: |
+            APTKernel-*.zip
+            /tmp/build.log
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.RELEASE == 'true' && env.BUILD_SUCCESS == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: APTKernel-${{ env.KERNEL_VERSION }}-${{ github.run_number }}
+          name: "APTKernel v${{ env.KERNEL_VERSION }} — alioth"
+          body: |
+            ## APTKernel — Poco F3 (alioth)
+            **Root Manager:** ${{ github.event.inputs.ROOT_MANAGER }}
+            **SuSFS:** ${{ github.event.inputs.SUSFS }}
+          files: APTKernel-*.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
