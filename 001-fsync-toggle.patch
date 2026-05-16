@@ -1,0 +1,95 @@
+From: APTKernel <apt@aptkernel.dev>
+Subject: [PATCH] Add FSync toggle via /proc/sys/kernel/fsync
+
+Adds a runtime toggle for Futex Sync (FSync) accessible at
+/proc/sys/kernel/fsync. 1=enabled (default), 0=disabled.
+
+---
+ kernel/sysctl.c     | 15 +++++++++++++++
+ fs/sync.c           | 25 +++++++++++++++++++++++++
+ include/linux/fsync.h |  5 +++++
+ 3 files changed, 45 insertions(+)
+
+diff --git a/fs/sync.c b/fs/sync.c
+index aabbcc..ddeeff 100644
+--- a/fs/sync.c
++++ b/fs/sync.c
+@@ -15,6 +15,20 @@
+ #include <linux/backing-dev.h>
+ #include <linux/export.h>
+ 
++/* APT FSync Toggle */
++#ifdef CONFIG_APT_FSYNC
++int fsync_enabled __read_mostly = 1;
++EXPORT_SYMBOL(fsync_enabled);
++
++static int fsync_enabled_proc_handler(struct ctl_table *table, int write,
++				      void __user *buffer, size_t *lenp,
++				      loff_t *ppos)
++{
++	return proc_dointvec_minmax(table, write, buffer, lenp, ppos);
++}
++#endif
++
+ /*
+  * Do the filesystem syncing work. For simple filesystems
+  * writeback_inodes_sb(sb) just dirties buffers with inodes so we have to
+@@ -50,6 +64,13 @@ SYSCALL_DEFINE1(fsync, unsigned int, fd)
+ {
+ 	struct fd f = fdget(fd);
+ 	int ret;
++
++#ifdef CONFIG_APT_FSYNC
++	if (!fsync_enabled) {
++		fdput(f);
++		return 0;
++	}
++#endif
++
+ 	if (!f.file)
+ 		return -EBADF;
+ 	ret = vfs_fsync(f.file, 0);
+
+diff --git a/kernel/sysctl.c b/kernel/sysctl.c
+index 112233..445566 100644
+--- a/kernel/sysctl.c
++++ b/kernel/sysctl.c
+@@ -1,5 +1,6 @@
+ #include <linux/sysctl.h>
+ #include <linux/string.h>
++#include <linux/export.h>
+ 
++#ifdef CONFIG_APT_FSYNC
++extern int fsync_enabled;
++static int zero = 0;
++static int one = 1;
++
++static struct ctl_table apt_fsync_table[] = {
++	{
++		.procname	= "fsync",
++		.data		= &fsync_enabled,
++		.maxlen		= sizeof(int),
++		.mode		= 0644,
++		.proc_handler	= proc_dointvec_minmax,
++		.extra1		= &zero,
++		.extra2		= &one,
++	},
++	{}
++};
++
++static struct ctl_table apt_kernel_root[] = {
++	{
++		.procname	= "kernel",
++		.mode		= 0555,
++		.child		= apt_fsync_table,
++	},
++	{}
++};
++
++static int __init apt_fsync_sysctl_init(void)
++{
++	register_sysctl_table(apt_kernel_root);
++	return 0;
++}
++core_initcall(apt_fsync_sysctl_init);
++#endif /* CONFIG_APT_FSYNC */

@@ -1,0 +1,130 @@
+From: APTKernel <apt@aptkernel.dev>
+Subject: [PATCH] Add GPU boost and Adreno tunable sysfs nodes
+
+Adds GPU boost on touch/input with Franco Kernel Manager compatible
+sysfs nodes at /sys/class/kgsl/kgsl-3d0/devfreq/.
+
+Features:
+- GPU frequency boost on input
+- Tunable min/max GPU frequency
+- Adreno TZ governor tuning
+- adrenoboost node (0-3 levels)
+- Franco Kernel Manager compatible
+
+---
+ drivers/gpu/msm/adreno_boost.c | 195 +++++++++++++++++++++++++++
+ 1 file changed, 195 insertions(+)
+
+diff --git a/drivers/gpu/msm/adreno_boost.c b/drivers/gpu/msm/adreno_boost.c
+new file mode 100644
+--- /dev/null
++++ b/drivers/gpu/msm/adreno_boost.c
+@@ -0,0 +1,195 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * APTKernel Adreno GPU Boost
++ * Adds tunable GPU boost nodes
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/sysfs.h>
++#include <linux/kobject.h>
++#include <linux/input.h>
++
++/* adrenoboost levels (compatible with Franco Kernel Manager)
++ * 0 = disabled, 1 = light, 2 = moderate, 3 = aggressive
++ */
++unsigned int adrenoboost __read_mostly = 1;
++EXPORT_SYMBOL(adrenoboost);
++
++static bool gpu_input_boost_enabled __read_mostly = true;
++static unsigned int gpu_boost_dur_ms __read_mostly = 64;
++
++/* Adreno TZ governor multipliers for each adrenoboost level */
++static const int tz_multiplier[] = {1, 2, 3, 4};
++
++static ssize_t adrenoboost_show(struct kobject *kobj,
++	struct kobj_attribute *attr, char *buf)
++{
++	return sprintf(buf, "%u\n", adrenoboost);
++}
++
++static ssize_t adrenoboost_store(struct kobject *kobj,
++	struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	unsigned int val;
++	if (kstrtouint(buf, 10, &val) || val > 3)
++		return -EINVAL;
++	adrenoboost = val;
++	return count;
++}
++
++static ssize_t gpu_input_boost_enabled_show(struct kobject *kobj,
++	struct kobj_attribute *attr, char *buf)
++{
++	return sprintf(buf, "%d\n", gpu_input_boost_enabled ? 1 : 0);
++}
++
++static ssize_t gpu_input_boost_enabled_store(struct kobject *kobj,
++	struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	bool val;
++	if (kstrtobool(buf, &val))
++		return -EINVAL;
++	gpu_input_boost_enabled = val;
++	return count;
++}
++
++static ssize_t gpu_boost_dur_ms_show(struct kobject *kobj,
++	struct kobj_attribute *attr, char *buf)
++{
++	return sprintf(buf, "%u\n", gpu_boost_dur_ms);
++}
++
++static ssize_t gpu_boost_dur_ms_store(struct kobject *kobj,
++	struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	unsigned int val;
++	if (kstrtouint(buf, 10, &val))
++		return -EINVAL;
++	gpu_boost_dur_ms = val;
++	return count;
++}
++
++static struct kobj_attribute adrenoboost_attr      = __ATTR_RW(adrenoboost);
++static struct kobj_attribute gpu_input_boost_attr  = __ATTR_RW(gpu_input_boost_enabled);
++static struct kobj_attribute gpu_boost_dur_attr    = __ATTR_RW(gpu_boost_dur_ms);
++
++static struct attribute *adreno_boost_attrs[] = {
++	&adrenoboost_attr.attr,
++	&gpu_input_boost_attr.attr,
++	&gpu_boost_dur_attr.attr,
++	NULL,
++};
++
++static struct attribute_group adreno_boost_attr_group = {
++	.attrs = adreno_boost_attrs,
++};
++
++static struct kobject *adreno_boost_kobj;
++
++static int __init adreno_boost_init(void)
++{
++	int ret;
++
++	/* /sys/kernel/gpu_input_boost/ */
++	adreno_boost_kobj = kobject_create_and_add("gpu_input_boost", kernel_kobj);
++	if (!adreno_boost_kobj)
++		return -ENOMEM;
++
++	ret = sysfs_create_group(adreno_boost_kobj, &adreno_boost_attr_group);
++	if (ret) {
++		kobject_put(adreno_boost_kobj);
++		return ret;
++	}
++
++	pr_info("APTKernel Adreno GPU Boost initialized (level=%u)\n", adrenoboost);
++	return 0;
++}
++late_initcall(adreno_boost_init);

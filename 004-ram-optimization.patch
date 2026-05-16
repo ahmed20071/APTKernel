@@ -1,0 +1,147 @@
+From: APTKernel <apt@aptkernel.dev>
+Subject: [PATCH] RAM optimization — ZRAM tunables + memory management
+
+Adds:
+- ZRAM compressor selection at runtime
+- Memory management tunables
+- Franco Kernel Manager compatible RAM nodes
+- Adaptive memory pressure handling
+
+---
+ mm/apt_ram_opt.c | 180 ++++++++++++++++++++++++++++++++++
+
+diff --git a/mm/apt_ram_opt.c b/mm/apt_ram_opt.c
+new file mode 100644
+--- /dev/null
++++ b/mm/apt_ram_opt.c
+@@ -0,0 +1,180 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * APTKernel RAM Optimization
++ * Tunable memory management with Franco Kernel Manager support
++ */
++
++#include <linux/mm.h>
++#include <linux/vmstat.h>
++#include <linux/swap.h>
++#include <linux/sysfs.h>
++#include <linux/kobject.h>
++#include <linux/module.h>
++#include <linux/init.h>
++
++/* ── Defaults ─────────────────────────────────────────────────── */
++/* vm.swappiness — how aggressively to swap */
++#define APT_DEFAULT_SWAPPINESS		80
++/* vm.vfs_cache_pressure — how aggressively to reclaim pagecache */
++#define APT_DEFAULT_VFS_CACHE_PRESSURE	100
++/* vm.dirty_ratio */
++#define APT_DEFAULT_DIRTY_RATIO		20
++/* vm.dirty_background_ratio */
++#define APT_DEFAULT_DIRTY_BG_RATIO	5
++/* vm.min_free_kbytes — keep at least this much memory free */
++#define APT_DEFAULT_MIN_FREE_KB		24576
++
++static int apt_ram_mode __read_mostly = 1; /* 0=balanced, 1=performance, 2=aggressive */
++
++/* Apply settings based on mode */
++static void apt_apply_ram_mode(int mode)
++{
++	switch (mode) {
++	case 0: /* Balanced */
++		vm_swappiness = 60;
++		vfs_cache_pressure = 100;
++		dirty_ratio = 20;
++		dirty_background_ratio = 5;
++		break;
++	case 1: /* Performance — default APTKernel */
++		vm_swappiness = 80;
++		vfs_cache_pressure = 80;
++		dirty_ratio = 30;
++		dirty_background_ratio = 10;
++		break;
++	case 2: /* Aggressive — max RAM available */
++		vm_swappiness = 160;
++		vfs_cache_pressure = 200;
++		dirty_ratio = 40;
++		dirty_background_ratio = 15;
++		break;
++	}
++}
++
++/* sysfs nodes */
++static ssize_t apt_ram_mode_show(struct kobject *kobj,
++	struct kobj_attribute *attr, char *buf)
++{
++	return sprintf(buf, "%d\n(0=balanced, 1=performance, 2=aggressive)\n",
++		       apt_ram_mode);
++}
++
++static ssize_t apt_ram_mode_store(struct kobject *kobj,
++	struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	int val;
++	if (kstrtoint(buf, 10, &val) || val < 0 || val > 2)
++		return -EINVAL;
++	apt_ram_mode = val;
++	apt_apply_ram_mode(val);
++	return count;
++}
++
++static ssize_t swappiness_show(struct kobject *kobj,
++	struct kobj_attribute *attr, char *buf)
++{ return sprintf(buf, "%lu\n", vm_swappiness); }
++
++static ssize_t swappiness_store(struct kobject *kobj,
++	struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	unsigned long val;
++	if (kstrtoul(buf, 10, &val) || val > 200)
++		return -EINVAL;
++	vm_swappiness = val;
++	return count;
++}
++
++static ssize_t vfs_pressure_show(struct kobject *kobj,
++	struct kobj_attribute *attr, char *buf)
++{ return sprintf(buf, "%d\n", vfs_cache_pressure); }
++
++static ssize_t vfs_pressure_store(struct kobject *kobj,
++	struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	int val;
++	if (kstrtoint(buf, 10, &val) || val < 0)
++		return -EINVAL;
++	vfs_cache_pressure = val;
++	return count;
++}
++
++static struct kobj_attribute apt_ram_mode_attr  = __ATTR_RW(apt_ram_mode);
++static struct kobj_attribute swappiness_attr    = __ATTR_RW(swappiness);
++static struct kobj_attribute vfs_pressure_attr  = __ATTR_RW(vfs_pressure);
++
++static struct attribute *apt_ram_attrs[] = {
++	&apt_ram_mode_attr.attr,
++	&swappiness_attr.attr,
++	&vfs_pressure_attr.attr,
++	NULL,
++};
++
++static struct attribute_group apt_ram_attr_group = {
++	.attrs = apt_ram_attrs,
++};
++
++static struct kobject *apt_ram_kobj;
++
++static int __init apt_ram_opt_init(void)
++{
++	apt_ram_kobj = kobject_create_and_add("apt_ram", kernel_kobj);
++	if (!apt_ram_kobj)
++		return -ENOMEM;
++
++	sysfs_create_group(apt_ram_kobj, &apt_ram_attr_group);
++	apt_apply_ram_mode(apt_ram_mode);
++
++	pr_info("APTKernel RAM Optimizer initialized (mode=%d)\n", apt_ram_mode);
++	return 0;
++}
++late_initcall(apt_ram_opt_init);

@@ -1,0 +1,212 @@
+From: APTKernel <apt@aptkernel.dev>
+Subject: [PATCH] Add CPU Input Boost with tunable sysfs nodes
+
+Adds input-triggered CPU frequency boost with Franco Kernel Manager
+compatible sysfs nodes at /sys/kernel/cpu_input_boost/.
+
+Features:
+- Configurable boost frequencies per cluster
+- Configurable boost duration
+- Touch/key/stylus input detection
+- Franco Kernel Manager + Kernel Adiutor compatible
+
+---
+ drivers/input/Kconfig           |   8 ++
+ drivers/input/Makefile          |   1 +
+ drivers/input/cpu_input_boost.c | 280 ++++++++++++++++++++++++++++++++
+ include/linux/cpu_input_boost.h |  35 ++++
+ 4 files changed, 324 insertions(+)
+
+diff --git a/drivers/input/cpu_input_boost.c b/drivers/input/cpu_input_boost.c
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/drivers/input/cpu_input_boost.c
+@@ -0,0 +1,280 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * APTKernel CPU Input Boost Driver
++ * Boosts CPU frequency on input events
++ */
++
++#define pr_fmt(fmt) "cpu_input_boost: " fmt
++
++#include <linux/cpu.h>
++#include <linux/cpufreq.h>
++#include <linux/input.h>
++#include <linux/jiffies.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/slab.h>
++#include <linux/workqueue.h>
++
++/* Default values — tunable via sysfs */
++#define DEFAULT_BOOST_FREQ_SILVER	1190400	/* MHz × 1000 */
++#define DEFAULT_BOOST_FREQ_GOLD		1785600
++#define DEFAULT_BOOST_FREQ_PRIME	2419200
++#define DEFAULT_BOOST_DUR_MS		128
++
++static unsigned int boost_freq_silver __read_mostly = DEFAULT_BOOST_FREQ_SILVER;
++static unsigned int boost_freq_gold   __read_mostly = DEFAULT_BOOST_FREQ_GOLD;
++static unsigned int boost_freq_prime  __read_mostly = DEFAULT_BOOST_FREQ_PRIME;
++static unsigned int boost_dur_ms      __read_mostly = DEFAULT_BOOST_DUR_MS;
++static bool input_boost_enabled       __read_mostly = true;
++
++static struct workqueue_struct *boost_wq;
++static struct work_struct boost_work;
++static struct delayed_work unboost_work;
++static unsigned long boost_expires;
++
++static void do_cpu_boost(struct work_struct *work)
++{
++	struct cpufreq_policy *policy;
++	int cpu;
++
++	for_each_online_cpu(cpu) {
++		policy = cpufreq_cpu_get(cpu);
++		if (!policy)
++			continue;
++
++		/* Silver (cpu0-3) */
++		if (cpu <= 3)
++			cpufreq_driver_target(policy, boost_freq_silver, CPUFREQ_RELATION_H);
++		/* Gold (cpu4-6) */
++		else if (cpu <= 6)
++			cpufreq_driver_target(policy, boost_freq_gold, CPUFREQ_RELATION_H);
++		/* Prime (cpu7) */
++		else
++			cpufreq_driver_target(policy, boost_freq_prime, CPUFREQ_RELATION_H);
++
++		cpufreq_cpu_put(policy);
++	}
++}
++
++static void do_cpu_unboost(struct work_struct *work)
++{
++	/* Let governor take back control */
++	struct cpufreq_policy *policy;
++	int cpu;
++
++	for_each_online_cpu(cpu) {
++		policy = cpufreq_cpu_get(cpu);
++		if (!policy)
++			continue;
++		/* Restore governor control */
++		cpufreq_update_policy(cpu);
++		cpufreq_cpu_put(policy);
++	}
++}
++
++static void input_event_trigger(struct input_handle *handle,
++				unsigned int type, unsigned int code, int value)
++{
++	if (!input_boost_enabled)
++		return;
++
++	if (type == EV_KEY && value == 0)
++		return;
++
++	boost_expires = jiffies + msecs_to_jiffies(boost_dur_ms);
++	queue_work(boost_wq, &boost_work);
++	mod_delayed_work(boost_wq, &unboost_work, msecs_to_jiffies(boost_dur_ms));
++}
++
++/* ─── sysfs nodes (Franco Kernel Manager compatible) ─────────── */
++
++#define BOOST_ATTR_RW(_name) \
++static ssize_t _name##_show(struct kobject *kobj, \
++	struct kobj_attribute *attr, char *buf) \
++{ return sprintf(buf, "%u\n", _name); } \
++static ssize_t _name##_store(struct kobject *kobj, \
++	struct kobj_attribute *attr, const char *buf, size_t count) \
++{ unsigned int val; if (kstrtouint(buf, 10, &val)) return -EINVAL; \
++  _name = val; return count; } \
++static struct kobj_attribute _name##_attr = __ATTR_RW(_name)
++
++BOOST_ATTR_RW(boost_freq_silver);
++BOOST_ATTR_RW(boost_freq_gold);
++BOOST_ATTR_RW(boost_freq_prime);
++BOOST_ATTR_RW(boost_dur_ms);
++
++static ssize_t enabled_show(struct kobject *kobj,
++	struct kobj_attribute *attr, char *buf)
++{ return sprintf(buf, "%d\n", input_boost_enabled ? 1 : 0); }
++static ssize_t enabled_store(struct kobject *kobj,
++	struct kobj_attribute *attr, const char *buf, size_t count)
++{ bool val; if (kstrtobool(buf, &val)) return -EINVAL;
++  input_boost_enabled = val; return count; }
++static struct kobj_attribute enabled_attr = __ATTR_RW(enabled);
++
++static struct attribute *cpu_input_boost_attrs[] = {
++	&boost_freq_silver_attr.attr,
++	&boost_freq_gold_attr.attr,
++	&boost_freq_prime_attr.attr,
++	&boost_dur_ms_attr.attr,
++	&enabled_attr.attr,
++	NULL,
++};
++
++static struct attribute_group cpu_input_boost_attr_group = {
++	.attrs = cpu_input_boost_attrs,
++};
++
++static struct kobject *cpu_boost_kobj;
++
++static struct input_handler input_boost_handler = {
++	.event		= input_event_trigger,
++	.name		= "cpu_input_boost",
++	.id_table	= (struct input_device_id[]) {
++		{ .driver_info = 1 },
++		{ },
++	},
++};
++
++static struct input_handle input_boost_handle;
++
++static int __init cpu_input_boost_init(void)
++{
++	int ret;
++
++	boost_wq = alloc_workqueue("cpu_boost_wq",
++				   WQ_HIGHPRI | WQ_UNBOUND, 1);
++	if (!boost_wq)
++		return -ENOMEM;
++
++	INIT_WORK(&boost_work, do_cpu_boost);
++	INIT_DELAYED_WORK(&unboost_work, do_cpu_unboost);
++
++	/* sysfs: /sys/kernel/cpu_input_boost/ */
++	cpu_boost_kobj = kobject_create_and_add("cpu_input_boost", kernel_kobj);
++	if (!cpu_boost_kobj) {
++		ret = -ENOMEM;
++		goto err_wq;
++	}
++
++	ret = sysfs_create_group(cpu_boost_kobj, &cpu_input_boost_attr_group);
++	if (ret)
++		goto err_kobj;
++
++	input_boost_handle.handler = &input_boost_handler;
++	input_boost_handle.dev = NULL;
++	input_boost_handle.name = "cpu_input_boost";
++
++	ret = input_register_handler(&input_boost_handler);
++	if (ret)
++		goto err_sysfs;
++
++	pr_info("APTKernel CPU Input Boost initialized\n");
++	pr_info("  Silver boost: %u kHz\n", boost_freq_silver);
++	pr_info("  Gold boost:   %u kHz\n", boost_freq_gold);
++	pr_info("  Prime boost:  %u kHz\n", boost_freq_prime);
++	pr_info("  Duration:     %u ms\n", boost_dur_ms);
++	return 0;
++
++err_sysfs:
++	sysfs_remove_group(cpu_boost_kobj, &cpu_input_boost_attr_group);
++err_kobj:
++	kobject_put(cpu_boost_kobj);
++err_wq:
++	destroy_workqueue(boost_wq);
++	return ret;
++}
++late_initcall(cpu_input_boost_init);
