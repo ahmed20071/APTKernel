@@ -45,17 +45,18 @@ jobs:
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-      - name: Setup Clang 14 (stable for 4.19)
+      - name: Setup Clang 12 (proven stable for kernel 4.19)
         run: |
-          sudo apt-get install -y clang-14 lld-14 llvm-14
-          sudo ln -sf /usr/bin/clang-14    /usr/local/bin/clang
-          sudo ln -sf /usr/bin/clang++-14  /usr/local/bin/clang++
-          sudo ln -sf /usr/bin/ld.lld-14   /usr/local/bin/ld.lld
-          sudo ln -sf /usr/bin/llvm-ar-14  /usr/local/bin/llvm-ar
-          sudo ln -sf /usr/bin/llvm-nm-14  /usr/local/bin/llvm-nm
-          sudo ln -sf /usr/bin/llvm-objcopy-14 /usr/local/bin/llvm-objcopy
-          sudo ln -sf /usr/bin/llvm-objdump-14 /usr/local/bin/llvm-objdump
-          sudo ln -sf /usr/bin/llvm-strip-14   /usr/local/bin/llvm-strip
+          sudo apt-get install -y clang-12 lld-12 llvm-12
+          sudo ln -sf /usr/bin/clang-12      /usr/local/bin/clang
+          sudo ln -sf /usr/bin/clang++-12    /usr/local/bin/clang++
+          sudo ln -sf /usr/bin/ld.lld-12     /usr/local/bin/ld.lld
+          sudo ln -sf /usr/bin/llvm-ar-12    /usr/local/bin/llvm-ar
+          sudo ln -sf /usr/bin/llvm-nm-12    /usr/local/bin/llvm-nm
+          sudo ln -sf /usr/bin/llvm-objcopy-12 /usr/local/bin/llvm-objcopy
+          sudo ln -sf /usr/bin/llvm-objdump-12 /usr/local/bin/llvm-objdump
+          sudo ln -sf /usr/bin/llvm-strip-12   /usr/local/bin/llvm-strip
+          sudo ln -sf /usr/bin/llvm-as-12      /usr/local/bin/llvm-as
           clang --version
 
       - name: Clone Kernel Source
@@ -113,8 +114,10 @@ jobs:
           sed -i 's/=unknown-warning-option//g' Makefile 2>/dev/null || true
           sed -i 's/-Werror=unknown-warning-option//g' Makefile 2>/dev/null || true
 
-          # Fix 4: Remove -Werror to prevent warnings stopping build
-          sed -i 's/ -Werror / /g' Makefile scripts/Makefile.build 2>/dev/null || true
+          # Fix 5: cgrp variable-sized struct warning → error
+          sed -i 's/-Wgnu-variable-sized-type-not-at-end//' Makefile include/linux/cgroup-defs.h 2>/dev/null || true
+          find . -name "*.c" -o -name "*.h" | xargs grep -l "struct cgrp" 2>/dev/null | head -5 | \
+            xargs sed -i 's/\(struct cgroup cgrp\)/struct cgroup cgrp __attribute__((unused))/' 2>/dev/null || true
 
           # Apply APT patches
           for patch in ../apt-config/*.patch; do
