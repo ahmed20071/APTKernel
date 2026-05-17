@@ -49,10 +49,10 @@ jobs:
       - name: Setup ZyC Clang 15
         run: |
           mkdir -p ~/clang
-          # ZyC Clang 15.0.7 — exact version that built the working kernel
-          wget -q --show-progress \
-            "https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20230419-release/Clang-15.0.7-20230419.tar.gz" \
-            -O ~/clang/clang.tar.gz
+          # Get correct download URL from ZyC's link file
+          ZYC_URL=$(curl -s "https://raw.githubusercontent.com/ZyCromerZ/Clang/main/Clang-15-link.txt" | head -1)
+          echo "Downloading: $ZYC_URL"
+          wget -q --show-progress "$ZYC_URL" -O ~/clang/clang.tar.gz
           tar -xzf ~/clang/clang.tar.gz -C ~/clang
           rm ~/clang/clang.tar.gz
           echo "PATH=$HOME/clang/bin:$PATH" >> $GITHUB_ENV
