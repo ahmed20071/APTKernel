@@ -10,7 +10,7 @@ on:
       KERNEL_BRANCH:
         description: 'Kernel Branch'
         required: true
-        default: 'alioth-s-oss'
+        default: 'alioth-r-oss'
       ROOT_MANAGER:
         description: 'Root Manager'
         required: true
