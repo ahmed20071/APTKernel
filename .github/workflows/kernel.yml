@@ -39,39 +39,46 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y \
             git curl wget zip unzip bc bison flex \
-            libssl-dev libelf-dev python3 \
+            libssl-dev libelf-dev python3 python-is-python3 \
             make gcc cpio ccache lz4 zstd \
             dwarves pahole pkg-config \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-      - name: Setup Clang 12 (proven stable for kernel 4.19)
-        run: |
-          sudo apt-get install -y clang-12 lld-12 llvm-12
-          sudo ln -sf /usr/bin/clang-12      /usr/local/bin/clang
-          sudo ln -sf /usr/bin/clang++-12    /usr/local/bin/clang++
-          sudo ln -sf /usr/bin/ld.lld-12     /usr/local/bin/ld.lld
-          sudo ln -sf /usr/bin/llvm-ar-12    /usr/local/bin/llvm-ar
-          sudo ln -sf /usr/bin/llvm-nm-12    /usr/local/bin/llvm-nm
-          sudo ln -sf /usr/bin/llvm-objcopy-12 /usr/local/bin/llvm-objcopy
-          sudo ln -sf /usr/bin/llvm-objdump-12 /usr/local/bin/llvm-objdump
-          sudo ln -sf /usr/bin/llvm-strip-12   /usr/local/bin/llvm-strip
-          sudo ln -sf /usr/bin/llvm-as-12      /usr/local/bin/llvm-as
-          clang --version
-
+      # ── Clone proven kernel source (EmanuelCN base) ───────────
       - name: Clone Kernel Source
         run: |
           git clone --depth=1 \
-            -b alioth-r-oss \
-            https://github.com/MiCode/Xiaomi_Kernel_OpenSource \
+            -b alioth \
+            https://github.com/EmanuelCN/kernel_xiaomi_sm8250 \
             kernel-source
+          echo "Source cloned — $(cd kernel-source && make kernelversion)"
 
+      # ── Toolchain (clang-r547379 — same as Duan-rax uses) ─────
+      - name: Download Clang r547379
+        run: |
+          mkdir -p ~/clang
+          # Download proven AOSP clang version
+          wget -q --show-progress \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz" \
+            -O ~/clang/clang.tar.gz 2>/dev/null || \
+          wget -q --show-progress \
+            "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240903-release/Clang-19.0.0git-20240903.tar.gz" \
+            -O ~/clang/clang.tar.gz
+          tar -xzf ~/clang/clang.tar.gz -C ~/clang
+          rm ~/clang/clang.tar.gz
+          export PATH="$HOME/clang/bin:$PATH"
+          clang --version || true
+          echo "CLANG_PATH=$HOME/clang/bin" >> $GITHUB_ENV
+
+      # ── Root Manager ──────────────────────────────────────────
       - name: Integrate KernelSU
         if: ${{ github.event.inputs.ROOT_MANAGER == 'KernelSU' }}
         run: |
           cd kernel-source
           KSU_TAG=$(curl -s "https://api.github.com/repos/tiann/KernelSU/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s $KSU_TAG
+          echo "KernelSU $KSU_TAG ✅"
 
       - name: Integrate ReSukiSU
         if: ${{ github.event.inputs.ROOT_MANAGER == 'ReSukiSU' }}
@@ -85,58 +92,42 @@ jobs:
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -
 
+      # ── SuSFS ─────────────────────────────────────────────────
       - name: Integrate SuSFS
         if: ${{ github.event.inputs.SUSFS == 'true' && github.event.inputs.ROOT_MANAGER != 'None' }}
         run: |
           cd kernel-source
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
           for patch in /tmp/susfs4ksu/kernel_patches/4.19/*.patch; do
-            [ -f "$patch" ] && git apply "$patch" 2>/dev/null || true
+            [ -f "$patch" ] && git apply "$patch" 2>/dev/null && echo "✅ $(basename $patch)" || echo "⚠️ skip $(basename $patch)"
           done
           cp /tmp/susfs4ksu/fs/susfs.c fs/ 2>/dev/null || true
           cp /tmp/susfs4ksu/include/linux/susfs.h include/linux/ 2>/dev/null || true
 
-      - name: Apply Fixes + APT Patches
+      # ── APT Patches ───────────────────────────────────────────
+      - name: Apply APT Patches
         run: |
           cd kernel-source
-
-          # Fix 1: yylloc multiple definition (4.19 + clang bug)
-          for f in scripts/dtc/dtc-lexer.lex.c scripts/dtc/dtc-lexer.l; do
-            [ -f "$f" ] && sed -i '/^YYLTYPE yylloc/s/^/extern /' "$f" || true
-          done
-
-          # Fix 2: CLANG_TRIPLE check in Makefile
-          sed -i 's/$(error.*Clang with Android.*)/$(info Bypassing CLANG_TRIPLE check)/' Makefile || true
-
-          # Fix 3: Remove unknown clang flags
-          sed -i 's/-Werror=implicit-function-declaration//g' Makefile scripts/Makefile.build arch/arm64/Makefile 2>/dev/null || true
-          sed -i 's/-Wno-implicit-function-declaration//g' Makefile 2>/dev/null || true
-          sed -i 's/=unknown-warning-option//g' Makefile 2>/dev/null || true
-          sed -i 's/-Werror=unknown-warning-option//g' Makefile 2>/dev/null || true
-
-          # Fix 5: cgrp variable-sized struct warning → error
-          sed -i 's/-Wgnu-variable-sized-type-not-at-end//' Makefile include/linux/cgroup-defs.h 2>/dev/null || true
-          find . -name "*.c" -o -name "*.h" | xargs grep -l "struct cgrp" 2>/dev/null | head -5 | \
-            xargs sed -i 's/\(struct cgroup cgrp\)/struct cgroup cgrp __attribute__((unused))/' 2>/dev/null || true
-
-          # Apply APT patches
           for patch in ../apt-config/*.patch; do
             [ -f "$patch" ] || continue
-            echo "Applying: $(basename $patch)"
-            git apply "$patch" 2>/dev/null || true
+            git apply "$patch" 2>/dev/null && echo "✅ $(basename $patch)" || echo "⚠️ skip $(basename $patch)"
           done
 
+      # ── defconfig ─────────────────────────────────────────────
       - name: Copy defconfig
         run: |
           cp apt-config/apt_alioth_defconfig kernel-source/arch/arm64/configs/
 
+      # ── Build ─────────────────────────────────────────────────
       - name: Build Kernel
         run: |
           cd kernel-source
+          export PATH="$HOME/clang/bin:$PATH"
           export KBUILD_BUILD_USER="APT"
           export KBUILD_BUILD_HOST="APTKernel"
 
-          MAKE_ARGS=(
+          args=(
+            -j$(nproc --all)
             O=out
             ARCH=arm64
             CC=clang
@@ -149,23 +140,23 @@ jobs:
             OBJCOPY=llvm-objcopy
             OBJDUMP=llvm-objdump
             STRIP=llvm-strip
+            LLVM=1
             LLVM_IAS=1
-            -j$(nproc --all)
           )
 
-          make "${MAKE_ARGS[@]}" apt_alioth_defconfig
-          make "${MAKE_ARGS[@]}" 2>&1 | tee /tmp/build.log
+          make "${args[@]}" apt_alioth_defconfig
+          make "${args[@]}" 2>&1 | tee /tmp/build.log
 
-          if [ -f "out/arch/arm64/boot/Image" ]; then
+          if [ -f out/arch/arm64/boot/Image ]; then
             echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
-            echo "✅ Kernel built successfully!"
+            echo "✅ Build successful!"
           else
             echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
-            echo "❌ Build failed"
-            tail -50 /tmp/build.log
+            tail -80 /tmp/build.log
             exit 1
           fi
 
+      # ── Package ───────────────────────────────────────────────
       - name: Package AnyKernel3
         if: env.BUILD_SUCCESS == 'true'
         run: |
@@ -175,9 +166,9 @@ jobs:
           sed -i 's/ExampleKernel/APTKernel/g' anykernel/anykernel.sh
           sed -i 's/=maguro/=alioth/g' anykernel/anykernel.sh
           cd anykernel
-          BUILD_DATE=$(date +%Y%m%d)
-          ROOT="${{ github.event.inputs.ROOT_MANAGER }}"
-          zip -r9 "../APTKernel-${BUILD_DATE}-alioth-${ROOT}.zip" . -x "*.git*"
+          ZIP="APTKernel-$(date +%Y%m%d)-alioth-${{ github.event.inputs.ROOT_MANAGER }}.zip"
+          zip -r9 "../$ZIP" . -x "*.git*"
+          echo "ZIP_NAME=$ZIP" >> $GITHUB_ENV
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -196,8 +187,7 @@ jobs:
             ## APTKernel — Poco F3 (alioth)
             **Root:** ${{ github.event.inputs.ROOT_MANAGER }}
             **SuSFS:** ${{ github.event.inputs.SUSFS }}
+            **Source:** EmanuelCN/kernel_xiaomi_sm8250
           files: APTKernel-*.zip
-          draft: false
-          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
