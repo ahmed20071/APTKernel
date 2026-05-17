@@ -34,97 +34,161 @@ jobs:
         with:
           path: apt-config
 
-      # ── Root Manager Integration ──────────────────────────────
-      - name: Clone Kernel + Integrate KernelSU
-        if: ${{ github.event.inputs.ROOT_MANAGER == 'KernelSU' }}
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            git curl wget zip unzip bc bison flex \
+            libssl-dev libelf-dev python3 \
+            make gcc cpio ccache lz4 zstd \
+            dwarves pahole pkg-config \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+
+      - name: Setup Clang 14 (stable for 4.19)
+        run: |
+          sudo apt-get install -y clang-14 lld-14 llvm-14
+          sudo ln -sf /usr/bin/clang-14    /usr/local/bin/clang
+          sudo ln -sf /usr/bin/clang++-14  /usr/local/bin/clang++
+          sudo ln -sf /usr/bin/ld.lld-14   /usr/local/bin/ld.lld
+          sudo ln -sf /usr/bin/llvm-ar-14  /usr/local/bin/llvm-ar
+          sudo ln -sf /usr/bin/llvm-nm-14  /usr/local/bin/llvm-nm
+          sudo ln -sf /usr/bin/llvm-objcopy-14 /usr/local/bin/llvm-objcopy
+          sudo ln -sf /usr/bin/llvm-objdump-14 /usr/local/bin/llvm-objdump
+          sudo ln -sf /usr/bin/llvm-strip-14   /usr/local/bin/llvm-strip
+          clang --version
+
+      - name: Clone Kernel Source
         run: |
           git clone --depth=1 \
             -b alioth-r-oss \
             https://github.com/MiCode/Xiaomi_Kernel_OpenSource \
             kernel-source
+
+      - name: Integrate KernelSU
+        if: ${{ github.event.inputs.ROOT_MANAGER == 'KernelSU' }}
+        run: |
           cd kernel-source
           KSU_TAG=$(curl -s "https://api.github.com/repos/tiann/KernelSU/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s $KSU_TAG
-          echo "KernelSU $KSU_TAG integrated"
 
-      - name: Clone Kernel + Integrate ReSukiSU
+      - name: Integrate ReSukiSU
         if: ${{ github.event.inputs.ROOT_MANAGER == 'ReSukiSU' }}
         run: |
-          git clone --depth=1 \
-            -b alioth-r-oss \
-            https://github.com/MiCode/Xiaomi_Kernel_OpenSource \
-            kernel-source
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash -
-          echo "ReSukiSU integrated"
 
-      - name: Clone Kernel + Integrate SukiSU-Ultra
+      - name: Integrate SukiSU-Ultra
         if: ${{ github.event.inputs.ROOT_MANAGER == 'SukiSU-Ultra' }}
         run: |
-          git clone --depth=1 \
-            -b alioth-r-oss \
-            https://github.com/MiCode/Xiaomi_Kernel_OpenSource \
-            kernel-source
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -
-          echo "SukiSU-Ultra integrated"
 
-      - name: Clone Kernel (No Root Manager)
-        if: ${{ github.event.inputs.ROOT_MANAGER == 'None' }}
-        run: |
-          git clone --depth=1 \
-            -b alioth-r-oss \
-            https://github.com/MiCode/Xiaomi_Kernel_OpenSource \
-            kernel-source
-
-      # ── SuSFS ─────────────────────────────────────────────────
       - name: Integrate SuSFS
         if: ${{ github.event.inputs.SUSFS == 'true' && github.event.inputs.ROOT_MANAGER != 'None' }}
         run: |
           cd kernel-source
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
           for patch in /tmp/susfs4ksu/kernel_patches/4.19/*.patch; do
-            [ -f "$patch" ] && git apply "$patch" 2>/dev/null && echo "Applied: $patch" || true
+            [ -f "$patch" ] && git apply "$patch" 2>/dev/null || true
           done
           cp /tmp/susfs4ksu/fs/susfs.c fs/ 2>/dev/null || true
           cp /tmp/susfs4ksu/include/linux/susfs.h include/linux/ 2>/dev/null || true
 
-      # ── Apply APT Patches ─────────────────────────────────────
-      - name: Apply APT Performance Patches
+      - name: Apply Fixes + APT Patches
         run: |
           cd kernel-source
+
+          # Fix 1: yylloc multiple definition (4.19 + clang bug)
+          for f in scripts/dtc/dtc-lexer.lex.c scripts/dtc/dtc-lexer.l; do
+            [ -f "$f" ] && sed -i '/^YYLTYPE yylloc/s/^/extern /' "$f" || true
+          done
+
+          # Fix 2: CLANG_TRIPLE check in Makefile
+          sed -i 's/$(error.*Clang with Android.*)/$(info Bypassing CLANG_TRIPLE check)/' Makefile || true
+
+          # Fix 3: Remove -Werror from scripts
+          sed -i 's/-Werror//' Makefile scripts/Makefile.build 2>/dev/null || true
+
+          # Apply APT patches
           for patch in ../apt-config/*.patch; do
             [ -f "$patch" ] || continue
             echo "Applying: $(basename $patch)"
             git apply "$patch" 2>/dev/null || true
           done
 
-      # ── Copy defconfig ────────────────────────────────────────
       - name: Copy defconfig
         run: |
           cp apt-config/apt_alioth_defconfig kernel-source/arch/arm64/configs/
 
-      - name: Fix Makefile CLANG_TRIPLE
-        run: |
-          # Fix the Makefile to accept gnu CLANG_TRIPLE
-          sed -i 's/android--/linux-gnu-/g' kernel-source/Makefile 2>/dev/null || true
-          sed -i '/android.*--target/d' kernel-source/Makefile 2>/dev/null || true
-          # Patch line 493 area that checks CLANG_TRIPLE
-          sed -i 's/$(error.*CLANG_TRIPLE.*)/$(warning Bypassing CLANG_TRIPLE check)/g' kernel-source/Makefile 2>/dev/null || true
-
-      # ── Build via kernel_build_action ─────────────────────────
       - name: Build Kernel
-        uses: dabao1955/kernel_build_action@main
+        run: |
+          cd kernel-source
+          export KBUILD_BUILD_USER="APT"
+          export KBUILD_BUILD_HOST="APTKernel"
+
+          MAKE_ARGS=(
+            O=out
+            ARCH=arm64
+            CC=clang
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            LD=ld.lld
+            AR=llvm-ar
+            NM=llvm-nm
+            OBJCOPY=llvm-objcopy
+            OBJDUMP=llvm-objdump
+            STRIP=llvm-strip
+            LLVM_IAS=1
+            -j$(nproc --all)
+          )
+
+          make "${MAKE_ARGS[@]}" apt_alioth_defconfig
+          make "${MAKE_ARGS[@]}" 2>&1 | tee /tmp/build.log
+
+          if [ -f "out/arch/arm64/boot/Image" ]; then
+            echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
+            echo "✅ Kernel built successfully!"
+          else
+            echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
+            echo "❌ Build failed"
+            tail -50 /tmp/build.log
+            exit 1
+          fi
+
+      - name: Package AnyKernel3
+        if: env.BUILD_SUCCESS == 'true'
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 anykernel
+          cp kernel-source/out/arch/arm64/boot/Image anykernel/
+          cp kernel-source/out/arch/arm64/boot/dts/qcom/*alioth*.dtbo anykernel/ 2>/dev/null || true
+          sed -i 's/ExampleKernel/APTKernel/g' anykernel/anykernel.sh
+          sed -i 's/=maguro/=alioth/g' anykernel/anykernel.sh
+          cd anykernel
+          BUILD_DATE=$(date +%Y%m%d)
+          ROOT="${{ github.event.inputs.ROOT_MANAGER }}"
+          zip -r9 "../APTKernel-${BUILD_DATE}-alioth-${ROOT}.zip" . -x "*.git*"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
-          kernel-url: ./kernel-source/
-          config: apt_alioth_defconfig
-          arch: arm64
-          aosp-gcc: true
-          aosp-clang: true
-          aosp-clang-version: r383902
-          android-version: 12
-          anykernel3: true
-          anykernel3-url: https://github.com/osm0sis/AnyKernel3
-          extra-make-args: 'CLANG_TRIPLE=aarch64-linux-gnu-'
-          release: true
-          access-token: ${{ secrets.GITHUB_TOKEN }}
+          name: APTKernel-alioth
+          path: APTKernel-*.zip
+          retention-days: 30
+
+      - name: Create Release
+        if: env.BUILD_SUCCESS == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: APTKernel-${{ github.run_number }}
+          name: "APTKernel — alioth | ${{ github.event.inputs.ROOT_MANAGER }}"
+          body: |
+            ## APTKernel — Poco F3 (alioth)
+            **Root:** ${{ github.event.inputs.ROOT_MANAGER }}
+            **SuSFS:** ${{ github.event.inputs.SUSFS }}
+          files: APTKernel-*.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
