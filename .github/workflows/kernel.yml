@@ -179,6 +179,7 @@ jobs:
             OBJCOPY=llvm-objcopy-20
             OBJDUMP=llvm-objdump-20
             STRIP=llvm-strip-20
+            LLVM_IAS=1
             -j$(nproc --all)
           )
           make "${MAKE_ARGS[@]}" apt_alioth_defconfig
