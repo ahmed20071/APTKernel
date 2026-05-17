@@ -140,8 +140,6 @@ jobs:
             OBJCOPY=llvm-objcopy
             OBJDUMP=llvm-objdump
             STRIP=llvm-strip
-            LLVM=1
-            LLVM_IAS=1
           )
 
           make "${args[@]}" apt_alioth_defconfig
