@@ -107,8 +107,14 @@ jobs:
           # Fix 2: CLANG_TRIPLE check in Makefile
           sed -i 's/$(error.*Clang with Android.*)/$(info Bypassing CLANG_TRIPLE check)/' Makefile || true
 
-          # Fix 3: Remove -Werror from scripts
-          sed -i 's/-Werror//' Makefile scripts/Makefile.build 2>/dev/null || true
+          # Fix 3: Remove unknown clang flags
+          sed -i 's/-Werror=implicit-function-declaration//g' Makefile scripts/Makefile.build arch/arm64/Makefile 2>/dev/null || true
+          sed -i 's/-Wno-implicit-function-declaration//g' Makefile 2>/dev/null || true
+          sed -i 's/=unknown-warning-option//g' Makefile 2>/dev/null || true
+          sed -i 's/-Werror=unknown-warning-option//g' Makefile 2>/dev/null || true
+
+          # Fix 4: Remove -Werror to prevent warnings stopping build
+          sed -i 's/ -Werror / /g' Makefile scripts/Makefile.build 2>/dev/null || true
 
           # Apply APT patches
           for patch in ../apt-config/*.patch; do
