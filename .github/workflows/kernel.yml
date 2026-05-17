@@ -49,8 +49,8 @@ jobs:
       - name: Clone Kernel Source
         run: |
           git clone --depth=1 \
-            -b alioth \
-            https://github.com/EmanuelCN/kernel_xiaomi_sm8250 \
+            -b main \
+            https://github.com/mvaisakh/alioth \
             kernel-source
           echo "Source cloned — $(cd kernel-source && make kernelversion)"
 
