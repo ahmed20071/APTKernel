@@ -94,10 +94,15 @@ jobs:
           echo "PATH=/usr/lib/llvm-20/bin:$PATH" >> $GITHUB_ENV
           clang --version
 
-      - name: Setup GCC
+      - name: Setup GCC Cross Compilers
         run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu \
+            binutils-arm-linux-gnueabi
           echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> $GITHUB_ENV
 
       - name: Clone Kernel Source
         run: |
@@ -164,12 +169,16 @@ jobs:
           MAKE_ARGS=(
             O=out
             ARCH=arm64
-            CC=clang
+            CC=clang-20
             CLANG_TRIPLE=aarch64-linux-gnu-
             CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-            LLVM=1
-            LLVM_IAS=1
+            LD=ld.lld-20
+            AR=llvm-ar-20
+            NM=llvm-nm-20
+            OBJCOPY=llvm-objcopy-20
+            OBJDUMP=llvm-objdump-20
+            STRIP=llvm-strip-20
             -j$(nproc --all)
           )
           make "${MAKE_ARGS[@]}" apt_alioth_defconfig
