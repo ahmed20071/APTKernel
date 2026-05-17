@@ -58,18 +58,13 @@ jobs:
       - name: Download Clang r547379
         run: |
           mkdir -p ~/clang
-          # Download proven AOSP clang version
-          wget -q --show-progress \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz" \
-            -O ~/clang/clang.tar.gz 2>/dev/null || \
           wget -q --show-progress \
             "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240903-release/Clang-19.0.0git-20240903.tar.gz" \
             -O ~/clang/clang.tar.gz
           tar -xzf ~/clang/clang.tar.gz -C ~/clang
           rm ~/clang/clang.tar.gz
-          export PATH="$HOME/clang/bin:$PATH"
-          clang --version || true
-          echo "CLANG_PATH=$HOME/clang/bin" >> $GITHUB_ENV
+          echo "PATH=$HOME/clang/bin:$PATH" >> $GITHUB_ENV
+          $HOME/clang/bin/clang --version || true
 
       # ── Root Manager ──────────────────────────────────────────
       - name: Integrate KernelSU
@@ -130,16 +125,18 @@ jobs:
             -j$(nproc --all)
             O=out
             ARCH=arm64
-            CC=clang
+            CC=$HOME/clang/bin/clang
             CLANG_TRIPLE=aarch64-linux-gnu-
             CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-            LD=ld.lld
-            AR=llvm-ar
-            NM=llvm-nm
-            OBJCOPY=llvm-objcopy
-            OBJDUMP=llvm-objdump
-            STRIP=llvm-strip
+            LD=$HOME/clang/bin/ld.lld
+            AR=$HOME/clang/bin/llvm-ar
+            NM=$HOME/clang/bin/llvm-nm
+            OBJCOPY=$HOME/clang/bin/llvm-objcopy
+            OBJDUMP=$HOME/clang/bin/llvm-objdump
+            STRIP=$HOME/clang/bin/llvm-strip
+            LLVM=1
+            LLVM_IAS=1
           )
 
           make "${args[@]}" apt_alioth_defconfig
