@@ -12,7 +12,7 @@ on:
           - ReSukiSU
           - SukiSU-Ultra
           - None
-        default: 'KernelSU'
+        default: 'ReSukiSU'
       SUSFS:
         description: 'Enable SuSFS'
         required: true
@@ -42,29 +42,32 @@ jobs:
             libssl-dev libelf-dev python3 python-is-python3 \
             make gcc cpio ccache lz4 zstd \
             dwarves pahole pkg-config \
-            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-      # ── Clone proven kernel source (EmanuelCN base) ───────────
-      - name: Clone Kernel Source
-        run: |
-          git clone --depth=1 \
-            -b main \
-            https://github.com/mvaisakh/alioth \
-            kernel-source
-          echo "Source cloned — $(cd kernel-source && make kernelversion)"
-
-      # ── Toolchain (clang-r547379 — same as Duan-rax uses) ─────
-      - name: Download Clang r547379
+      # ── ZyC Clang 15 — same version used in the working kernel ─
+      - name: Setup ZyC Clang 15
         run: |
           mkdir -p ~/clang
+          # ZyC Clang 15.0.7 — exact version that built the working kernel
           wget -q --show-progress \
-            "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240903-release/Clang-19.0.0git-20240903.tar.gz" \
+            "https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20230419-release/Clang-15.0.7-20230419.tar.gz" \
             -O ~/clang/clang.tar.gz
           tar -xzf ~/clang/clang.tar.gz -C ~/clang
           rm ~/clang/clang.tar.gz
           echo "PATH=$HOME/clang/bin:$PATH" >> $GITHUB_ENV
-          $HOME/clang/bin/clang --version || true
+          $HOME/clang/bin/clang --version
+
+      # ── Kernel Source — AstideLabs (same source as working kernel) ─
+      - name: Clone Kernel Source
+        run: |
+          git clone --depth=1 \
+            -b android16-aptusitu-new \
+            https://github.com/AstideLabs/android_kernel_xiaomi_sm8250 \
+            kernel-source
+          cd kernel-source
+          echo "KERNEL_VERSION=$(make kernelversion)" >> $GITHUB_ENV
+          echo "Source: $(make kernelversion) ✅"
 
       # ── Root Manager ──────────────────────────────────────────
       - name: Integrate KernelSU
@@ -73,7 +76,6 @@ jobs:
           cd kernel-source
           KSU_TAG=$(curl -s "https://api.github.com/repos/tiann/KernelSU/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s $KSU_TAG
-          echo "KernelSU $KSU_TAG ✅"
 
       - name: Integrate ReSukiSU
         if: ${{ github.event.inputs.ROOT_MANAGER == 'ReSukiSU' }}
@@ -113,7 +115,7 @@ jobs:
         run: |
           cp apt-config/apt_alioth_defconfig kernel-source/arch/arm64/configs/
 
-      # ── Build ─────────────────────────────────────────────────
+      # ── Build — same flags as working kernel ──────────────────
       - name: Build Kernel
         run: |
           cd kernel-source
@@ -121,6 +123,7 @@ jobs:
           export KBUILD_BUILD_USER="APT"
           export KBUILD_BUILD_HOST="APTKernel"
 
+          # GNU ld — same as working kernel (not ld.lld)
           args=(
             -j$(nproc --all)
             O=out
@@ -129,7 +132,6 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu-
             CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-            LD=$HOME/clang/bin/ld.lld
             AR=$HOME/clang/bin/llvm-ar
             NM=$HOME/clang/bin/llvm-nm
             OBJCOPY=$HOME/clang/bin/llvm-objcopy
@@ -163,7 +165,6 @@ jobs:
           cd anykernel
           ZIP="APTKernel-$(date +%Y%m%d)-alioth-${{ github.event.inputs.ROOT_MANAGER }}.zip"
           zip -r9 "../$ZIP" . -x "*.git*"
-          echo "ZIP_NAME=$ZIP" >> $GITHUB_ENV
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -182,7 +183,8 @@ jobs:
             ## APTKernel — Poco F3 (alioth)
             **Root:** ${{ github.event.inputs.ROOT_MANAGER }}
             **SuSFS:** ${{ github.event.inputs.SUSFS }}
-            **Source:** EmanuelCN/kernel_xiaomi_sm8250
+            **Compiler:** ZyC Clang 15.0.7
+            **Source:** AstideLabs/android_kernel_xiaomi_sm8250
           files: APTKernel-*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
