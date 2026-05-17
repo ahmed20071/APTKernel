@@ -117,5 +117,6 @@ jobs:
           android-version: 12
           anykernel3: true
           anykernel3-url: https://github.com/osm0sis/AnyKernel3
+          extra-config: 'CLANG_TRIPLE=aarch64-linux-gnu-'
           release: true
           access-token: ${{ secrets.GITHUB_TOKEN }}
